@@ -6,6 +6,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 from dateutil import parser
 from dotenv import load_dotenv
+from transformers import pipeline
 
 load_dotenv()
 
@@ -15,8 +16,21 @@ if not auth_token:
     exit()
 
 print("="*40)
-print("   TARGET STREAM SCRAPER (V2)   ")
+print("   TARGET STREAM SCRAPER (V3)   ")
 print("="*40)
+
+model_path = "./finetuned_stock_model" 
+print(f"Loading AI Model from: {model_path}...")
+
+try:
+    stock_classifier = pipeline("sentiment-analysis", model=model_path, tokenizer=model_path)
+    print("✅ AI Model Loaded Successfully!")
+except Exception as e:
+    print(f"❌ ERROR Loading AI Model: {e}")
+    print("Make sure the folder exists and contains the model files.")
+    exit()
+
+print("-" * 30)
 
 ticker_symbol = input("Enter stock ticker (e.g., BBCA): ").strip().upper() or "BBCA"
 days_input = input("Enter number of days to scrape (Default 30): ").strip()
@@ -77,6 +91,8 @@ for i in range(max_loops):
                     is_finished = True
                     break
 
+                content_text = msg.get('content_original', msg.get('content'))
+                
                 sentiment_label = msg.get('news_feed', {}).get('label', 'neutral')
                 if not sentiment_label: sentiment_label = 'neutral' 
 
@@ -94,13 +110,32 @@ for i in range(max_loops):
                         elif target_px < last_px:
                             prediction_signal = "bearish_target"
 
+                ai_sentiment = "NEUTRAL"
+                ai_score = 0.0
+
+                if content_text:
+                    try:
+                        ai_result = stock_classifier(content_text[:512]) 
+                        
+                        raw_label = ai_result[0]['label']
+                        ai_score = ai_result[0]['score']
+
+                        if raw_label == 'LABEL_1':
+                            ai_sentiment = "BULLISH"
+                        else:
+                            ai_sentiment = "BEARISH"
+                    except Exception as e:
+                        ai_sentiment = "ERROR"
+
                 row = {
                     "stream_id": msg.get('stream_id'),
                     "date": msg_date.strftime('%Y-%m-%d %H:%M:%S'),
                     "username": msg.get('user', {}).get('username'),
-                    "content": msg.get('content_original', msg.get('content')), 
+                    "content": content_text, 
                     "sentiment_label": sentiment_label,       
                     "prediction_signal": prediction_signal,   
+                    "ai_sentiment": ai_sentiment, 
+                    "ai_confidence": round(ai_score, 4),
                     "likes": msg.get('total_likes', 0),
                     "replies": msg.get('total_replies', 0)
                 }
@@ -126,11 +161,15 @@ print("-" * 30)
 
 if all_streams:
     df = pd.DataFrame(all_streams)
-    csv_filename = f"stream_{ticker_symbol}_{days_back}days.csv"
+    csv_filename = f"stream_{ticker_symbol}_{days_back}days_AI_Analytics.csv"
 
     print(f"\n📊 Quick Analysis for {len(df)} messages:")
-    print(f"- Bullish Targets Found: {len(df[df['prediction_signal']=='bullish_target'])}")
-    print(f"- Bearish Targets Found: {len(df[df['prediction_signal']=='bearish_target'])}")
+    print(f"- Platform Signals (Target Price):")
+    print(f"  > Bullish: {len(df[df['prediction_signal']=='bullish_target'])}")
+    print(f"  > Bearish: {len(df[df['prediction_signal']=='bearish_target'])}")
+    print(f"- AI Sentiment Analysis:")
+    print(f"  > Bullish: {len(df[df['ai_sentiment']=='BULLISH'])}")
+    print(f"  > Bearish: {len(df[df['ai_sentiment']=='BEARISH'])}")
     
     try:
         df.to_csv(csv_filename, index=False, encoding='utf-8-sig')
