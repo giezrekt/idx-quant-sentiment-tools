@@ -16,7 +16,7 @@ if not auth_token:
     exit()
 
 print("="*40)
-print("   TARGET STREAM SCRAPER (V3)   ")
+print("   TARGET STREAM SCRAPER + AI (V3.1)   ")
 print("="*40)
 
 model_path = "./finetuned_stock_model" 
@@ -110,7 +110,7 @@ for i in range(max_loops):
                         elif target_px < last_px:
                             prediction_signal = "bearish_target"
 
-                ai_sentiment = "NEUTRAL"
+                ai_sentiment = "NEUTRAL 😐"
                 ai_score = 0.0
 
                 if content_text:
@@ -119,12 +119,17 @@ for i in range(max_loops):
                         
                         raw_label = ai_result[0]['label']
                         ai_score = ai_result[0]['score']
+                        
+                        threshold_neutral = 0.75
 
-                        if raw_label == 'LABEL_1':
-                            ai_sentiment = "BULLISH"
+                        if ai_score < threshold_neutral:
+                            ai_sentiment = "NEUTRAL 😐"
+                        elif raw_label == 'LABEL_1':
+                            ai_sentiment = "BULLISH 🚀"
                         else:
-                            ai_sentiment = "BEARISH"
-                    except Exception as e:
+                            ai_sentiment = "BEARISH 🔻"
+                            
+                    except Exception:
                         ai_sentiment = "ERROR"
 
                 row = {
@@ -162,14 +167,35 @@ print("-" * 30)
 if all_streams:
     df = pd.DataFrame(all_streams)
     csv_filename = f"stream_{ticker_symbol}_{days_back}days_AI_Analytics.csv"
+    
+    total_msgs = len(df)
+    
+    bullish_count = len(df[df['ai_sentiment'] == 'BULLISH 🚀'])
+    bearish_count = len(df[df['ai_sentiment'] == 'BEARISH 🔻'])
+    neutral_count = len(df[df['ai_sentiment'] == 'NEUTRAL 😐'])
+    
+    bullish_pct = (bullish_count / total_msgs) * 100 if total_msgs > 0 else 0
+    bearish_pct = (bearish_count / total_msgs) * 100 if total_msgs > 0 else 0
+    neutral_pct = (neutral_count / total_msgs) * 100 if total_msgs > 0 else 0
+
+    sentiment_map = {
+        "BULLISH 🚀": bullish_pct,
+        "BEARISH 🔻": bearish_pct,
+        "NEUTRAL 😐": neutral_pct
+    }
+    dominant_sentiment = max(sentiment_map, key=sentiment_map.get)
+    dominant_pct = sentiment_map[dominant_sentiment]
 
     print(f"\n📊 Quick Analysis for {len(df)} messages:")
     print(f"- Platform Signals (Target Price):")
     print(f"  > Bullish: {len(df[df['prediction_signal']=='bullish_target'])}")
     print(f"  > Bearish: {len(df[df['prediction_signal']=='bearish_target'])}")
     print(f"- AI Sentiment Analysis:")
-    print(f"  > Bullish: {len(df[df['ai_sentiment']=='BULLISH'])}")
-    print(f"  > Bearish: {len(df[df['ai_sentiment']=='BEARISH'])}")
+    print(f"  > Bullish : {bullish_count} ({bullish_pct:.1f}%)")
+    print(f"  > Bearish : {bearish_count} ({bearish_pct:.1f}%)")
+    print(f"  > Neutral : {neutral_count} ({neutral_pct:.1f}%)")
+    print("-" * 30)
+    print(f"📢 CONCLUSION: Market Sentiment is {dominant_sentiment} ({dominant_pct:.1f}%)")
     
     try:
         df.to_csv(csv_filename, index=False, encoding='utf-8-sig')
