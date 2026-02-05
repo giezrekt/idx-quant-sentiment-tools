@@ -4,12 +4,10 @@ import plotly.graph_objects as go
 import os
 import requests
 import time
-import random
 from datetime import datetime, timedelta
 from dateutil import parser
 from dotenv import load_dotenv
 from transformers import pipeline
-
 import stock_data 
 
 st.set_page_config(page_title="Market Analysis Dashboard", layout="wide", page_icon="📈")
@@ -17,35 +15,23 @@ load_dotenv()
 
 st.markdown("""
     <style>
-    /* Hide Anchor Links (Chain Icon) */
     .css-15zrgzn {display: none}
     .css-10trblm {display: none}
     a.anchor-link {display: none !important;}
-    
-    /* Full Width Buttons */
-    div.stButton > button {
-        width: 100%;
-        border-radius: 8px;
-    }
-    
-    /* Sidebar Buttons Alignment */
-    [data-testid="stSidebar"] div.stButton > button {
-        text-align: left;
-    }
+    div.stButton > button {width: 100%; border-radius: 8px;}
+    [data-testid="stSidebar"] div.stButton > button {text-align: left;}
     </style>
     """, unsafe_allow_html=True)
 
 WATCHLIST_FILE = "my_watchlist.txt"
 
 def load_watchlist_from_file():
-    """Reads watchlist from txt file to persist data across refreshes."""
     if os.path.exists(WATCHLIST_FILE):
         with open(WATCHLIST_FILE, "r") as f:
             return [line.strip() for line in f.readlines() if line.strip()]
     return []
 
 def save_watchlist_to_file(current_list):
-    """Saves current watchlist to txt file."""
     with open(WATCHLIST_FILE, "w") as f:
         for ticker in current_list:
             f.write(f"{ticker}\n")
@@ -63,14 +49,13 @@ def load_ai_model():
 stock_classifier = load_ai_model()
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def get_stock_price(ticker, days=180):
-    auth_token = os.getenv("TARGET_AUTH_TOKEN")
-    base_url = os.getenv("TARGET_PRICE_URL")
+def get_stock_price(ticker, days, user_token):
+    base_url = os.getenv("TARGET_PRICE_URL") 
     
-    if not auth_token or not base_url:
+    if not user_token or not base_url:
         return pd.DataFrame()
 
-    headers = {"Authorization": auth_token, "User-Agent": "Mozilla/5.0"}
+    headers = {"Authorization": f"Bearer {user_token}", "User-Agent": "Mozilla/5.0"}
     target_url = f"{base_url}/{ticker}"
     
     end_date_obj = datetime.now()
@@ -101,6 +86,8 @@ def get_stock_price(ticker, days=180):
                 batch_result = response.json().get('data', {}).get('result', [])
                 if batch_result:
                     all_price_data.extend(batch_result)
+            elif response.status_code == 401:
+                return pd.DataFrame() 
             
             curr_date = batch_end
             
@@ -111,7 +98,7 @@ def get_stock_price(ticker, days=180):
 
             time.sleep(0.05) 
             
-    except Exception as e:
+    except Exception:
         pass
     
     my_bar.empty()
@@ -125,14 +112,13 @@ def get_stock_price(ticker, days=180):
     return pd.DataFrame()
 
 @st.cache_data(ttl=900, show_spinner=False)
-def get_stock_sentiment(ticker, days=3):
-    auth_token = os.getenv("TARGET_AUTH_TOKEN")
+def get_stock_sentiment(ticker, days, user_token):
     base_url = os.getenv("TARGET_STREAM_URL")
     
-    if not auth_token or not base_url:
+    if not user_token or not base_url:
         return None
 
-    headers = {"Authorization": auth_token, "User-Agent": "Mozilla/5.0"}
+    headers = {"Authorization": f"Bearer {user_token}", "User-Agent": "Mozilla/5.0"}
     target_url = f"{base_url}/{ticker}"
     
     cutoff_date = datetime.now() - timedelta(days=days)
@@ -149,7 +135,7 @@ def get_stock_sentiment(ticker, days=3):
         for i in range(max_loops):
             if is_finished: break
             
-            my_bar.progress(min((i + 1) / max_loops, 0.9), text=f"Scanning community stream (Batch {i+1})...")
+            my_bar.progress(min((i + 1) / max_loops, 0.9), text=f"Scanning stream (Batch {i+1})...")
 
             params = {"category": "STREAM_CATEGORY_ALL", "limit": 20}
             if current_cursor:
@@ -162,8 +148,7 @@ def get_stock_sentiment(ticker, days=3):
                 stream_list = data_json.get('data', {}).get('stream', [])
                 next_cursor = data_json.get('data', {}).get('pagination', {}).get('next_cursor')
 
-                if not stream_list:
-                    break 
+                if not stream_list: break 
 
                 for msg in stream_list:
                     try:
@@ -230,60 +215,65 @@ def get_stock_sentiment(ticker, days=3):
     
     return None
 
-
 st.markdown("<h1 style='text-align: left; pointer-events: none;'>Market Analysis Dashboard</h1>", unsafe_allow_html=True)
 st.markdown("Monitor your portfolio, analyze market sentiment using finetuned ML, and discover diversification opportunities.")
 
-if 'active_ticker' not in st.session_state:
-    st.session_state.active_ticker = "" 
+st.sidebar.header("🔑 Authentication")
+user_raw_token = st.sidebar.text_input("Enter Auth Token", type="password").strip()
 
-if 'watchlist' not in st.session_state:
-    st.session_state.watchlist = load_watchlist_from_file()
+if 'active_ticker' not in st.session_state: st.session_state.active_ticker = "" 
+if 'ticker_input_widget' not in st.session_state: st.session_state.ticker_input_widget = ""
+if 'watchlist' not in st.session_state: st.session_state.watchlist = load_watchlist_from_file()
 
-def update_ticker_state():
+def on_ticker_input_change():
     st.session_state.active_ticker = st.session_state.ticker_input_widget
 
-def set_ticker_from_button(new_ticker):
+def set_ticker_callback(new_ticker):
     st.session_state.active_ticker = new_ticker
+    st.session_state.ticker_input_widget = new_ticker
 
 def update_watchlist(new_list):
     st.session_state.watchlist = new_list
     save_watchlist_to_file(new_list)
 
+st.sidebar.divider()
 st.sidebar.header("Portfolio Input")
 
 ticker_input = st.sidebar.text_input(
     "Enter Stock Ticker (e.g., BBCA)", 
-    value=st.session_state.active_ticker, 
-    key="ticker_input_widget",            
-    on_change=update_ticker_state         
-).strip().upper()
+    key="ticker_input_widget",
+    on_change=on_ticker_input_change
+)
 
 timeframe_option = st.sidebar.selectbox("Sentiment Timeframe", ["1 Day", "3 Days"])
 days_back = 1 if timeframe_option == "1 Day" else 3
 
 if st.sidebar.button("🔍 Analyze Stock"):
-    update_ticker_state()
+    on_ticker_input_change()
 
 st.sidebar.divider()
 st.sidebar.subheader("🌟 My Watchlist")
-
 if st.session_state.watchlist:
     for stock in st.session_state.watchlist:
-        if st.sidebar.button(f"📄 {stock}", key=f"wl_btn_{stock}"):
-            set_ticker_from_button(stock)
-            st.rerun()
+        st.sidebar.button(
+            f"📄 {stock}", 
+            key=f"wl_btn_{stock}", 
+            on_click=set_ticker_callback, 
+            args=(stock,)
+        )
 else:
     st.sidebar.caption("No favorites yet.")
+
+if not user_raw_token:
+    st.warning("🔒 **Locked:** Please enter your Auth Token in the sidebar to access the dashboard.")
+    st.stop() 
 
 current_ticker = st.session_state.active_ticker.strip().upper()
 
 if current_ticker:
-    
     user_sector = stock_data.get_ticker_sector(current_ticker)
     
     col1, col2, col3 = st.columns([2, 3, 2])
-    
     col1.metric("Ticker", current_ticker)
     col2.metric("Sector", user_sector)
     
@@ -310,64 +300,63 @@ if current_ticker:
     st.subheader(f"📊 Technical & Sentiment Analysis: {current_ticker}")
     
     with st.spinner(f"Loading data for {current_ticker}..."):
-        df_price = get_stock_price(current_ticker, days=180) 
-        sentiment_data = get_stock_sentiment(current_ticker, days=days_back)
+        df_price = get_stock_price(current_ticker, days=180, user_token=user_raw_token) 
+        sentiment_data = get_stock_sentiment(current_ticker, days=days_back, user_token=user_raw_token)
 
-    if not df_price.empty:
-        fig = go.Figure(data=[go.Candlestick(x=df_price['date'],
-                        open=df_price['open'], high=df_price['high'],
-                        low=df_price['low'], close=df_price['close'])])
-        fig.update_layout(title=f"{current_ticker} Daily Price Trend", xaxis_rangeslider_visible=False)
-        st.plotly_chart(fig, use_container_width=True)
+    if df_price.empty and sentiment_data is None:
+        st.error("❌ **Data Fetch Failed.** Check your Token or Ticker Symbol.")
     else:
-        st.warning("Price data not found or API error.")
+        if not df_price.empty:
+            fig = go.Figure(data=[go.Candlestick(x=df_price['date'],
+                            open=df_price['open'], high=df_price['high'],
+                            low=df_price['low'], close=df_price['close'])])
+            fig.update_layout(title=f"{current_ticker} Daily Price Trend", xaxis_rangeslider_visible=False)
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.warning("Price data not found.")
 
-    if sentiment_data:
-        s_col1, s_col2, s_col3 = st.columns(3)
-        s_col1.info(f"Dominant Sentiment: **{sentiment_data['dominant']}**")
-        s_col2.progress(sentiment_data['bullish_pct'] / 100, text=f"Bullish Score: {sentiment_data['bullish_pct']:.1f}%")
-        s_col3.write(f"Sample Size: {sentiment_data['total']} chat streams (Last {days_back} Days)")
-    else:
-        st.warning(f"Not enough sentiment data available for the last {days_back} days.")
+        if sentiment_data:
+            s_col1, s_col2, s_col3 = st.columns(3)
+            s_col1.info(f"Dominant Sentiment: **{sentiment_data['dominant']}**")
+            s_col2.progress(sentiment_data['bullish_pct'] / 100, text=f"Bullish Score: {sentiment_data['bullish_pct']:.1f}%")
+            s_col3.write(f"Sample Size: {sentiment_data['total']} chat streams")
+        else:
+            st.warning("Sentiment data not found.")
 
-    st.divider()
+        st.divider()
 
-    st.subheader("💡 Diversification Recommendations")
-    
-    if user_sector != "Unknown":
-        candidates = stock_data.get_diversification_candidates(user_sector, [current_ticker])
-        st.write(f"Since your portfolio contains **{user_sector}**, AI suggests looking at these sectors:")
-        
-        cand_cols = st.columns(len(candidates))
-        
-        for idx, cand in enumerate(candidates):
-            with cand_cols[idx]:
-                st.markdown(f"### {cand}")
-                cand_sector = stock_data.get_ticker_sector(cand)
-                st.caption(f"{cand_sector}")
-                
-                with st.spinner("Analyzing..."):
-                     cand_sent = get_stock_sentiment(cand, days=days_back)
-                
-                if cand_sent:
-                    pct = cand_sent['bullish_pct']
-                    dom = cand_sent['dominant']
+        st.subheader("💡 Diversification Recommendations")
+        if user_sector != "Unknown":
+            candidates = stock_data.get_diversification_candidates(user_sector, [current_ticker])
+            st.write(f"Since your portfolio contains **{user_sector}**, AI suggests looking at these sectors:")
+            
+            cand_cols = st.columns(len(candidates))
+            for idx, cand in enumerate(candidates):
+                with cand_cols[idx]:
+                    st.markdown(f"### {cand}")
+                    cand_sector = stock_data.get_ticker_sector(cand)
+                    st.caption(f"{cand_sector}")
                     
-                    if "BULLISH" in dom:
-                        st.success(f"{dom} ({pct:.0f}%)")
-                    elif "BEARISH" in dom:
-                        st.error(f"{dom} ({pct:.0f}%)")
+                    with st.spinner("Analyzing..."):
+                        cand_sent = get_stock_sentiment(cand, days=days_back, user_token=user_raw_token)
+                    
+                    if cand_sent:
+                        pct = cand_sent['bullish_pct']
+                        dom = cand_sent['dominant']
+                        if "BULLISH" in dom: st.success(f"{dom} ({pct:.0f}%)")
+                        elif "BEARISH" in dom: st.error(f"{dom} ({pct:.0f}%)")
+                        else: st.warning(f"{dom} ({pct:.0f}%)")
                     else:
-                        st.warning(f"{dom} ({pct:.0f}%)")
-                else:
-                    st.info("No Data")
-                
-                if st.button(f"Open Chart {cand}", key=f"btn_{cand}"):
-                    set_ticker_from_button(cand)
-                    st.rerun()
+                        st.info("No Data")
                     
-    else:
-        st.info("Diversification recommendations are available for known stocks only.")
+                    st.button(
+                        f"Open Chart {cand}", 
+                        key=f"btn_{cand}", 
+                        on_click=set_ticker_callback, 
+                        args=(cand,)
+                    )
+        else:
+            st.info("Diversification recommendations are available for known stocks only.")
 
 else:
-    st.info("👈 Please enter a Ticker in the sidebar (e.g. BBCA) and press Enter to start.")
+    st.info("👈 Please enter your Auth Token and a Ticker in the sidebar to start.")
